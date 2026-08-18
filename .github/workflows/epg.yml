@@ -1,0 +1,103 @@
+name: EPG Update
+on:
+  schedule:
+    - cron: '30 16,22,4,10 * * *'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4.2.2
+        with:
+          fetch-depth: 1
+          token: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Update EPG Files
+        run: |
+          # 清理旧文件
+          rm -rf e.xml e.xml.gz temp_epg_*.xml merged_epg.xml
+          
+          # 定义普通EPG源（优先尝试）
+          EPG_SOURCES=(
+            "http://epg.51zmt.top:8000/e1.xml"
+            "http://e.erw.cc/all.xml"
+            "https://epg.zsdc.eu.org/t.xml"
+             # "https://epg.pw/xmltv/epg.xml"
+          )
+          
+          # 第一步：尝试下载普通单源EPG
+          DOWNLOAD_SUCCESS=0
+          for SOURCE in "${EPG_SOURCES[@]}"; do
+            echo "📥 尝试下载EPG源: $SOURCE"
+            wget -v -T 20 -O e.xml "$SOURCE" -t 2 || true
+            if [ -f e.xml ] && [ -s e.xml ] && head -1 e.xml | grep -q "<?xml"; then
+              echo "✅ 成功下载有效EPG源: $SOURCE"
+              DOWNLOAD_SUCCESS=1
+              break
+            else
+              echo "❌ EPG源 $SOURCE 下载失败，尝试下一个"
+              rm -f e.xml
+            fi
+          done
+          
+          # 第二步：普通源失败则合并epg.pw的CN/HK/TW源
+          if [ $DOWNLOAD_SUCCESS -eq 0 ]; then
+            echo "ℹ️ 普通源失败，合并epg.pw的CN/HK/TW源"
+            # 下载多个源
+            EPG_PW_SOURCES=(
+              "https://epg.pw/xmltv/epg_CN.xml"
+              "https://epg.pw/xmltv/epg_HK.xml"
+              "https://epg.pw/xmltv/epg_TW.xml"
+            )
+            for INDEX in "${!EPG_PW_SOURCES[@]}"; do
+              wget -v -T 20 -O "temp_epg_$INDEX.xml" "${EPG_PW_SOURCES[$INDEX]}" -t 2 || rm -f "temp_epg_$INDEX.xml"
+            done
+            
+            # 检查有效文件
+            if [ $(ls temp_epg_*.xml 2>/dev/null | wc -l) -eq 0 ]; then
+              echo "❌ epg.pw所有源下载失败"
+              exit 1
+            fi
+            
+            # 合并XML（仅保留1个tv标签）
+            FIRST_FILE=$(ls temp_epg_*.xml | head -1)
+            grep -m1 "^<?xml" "$FIRST_FILE" > merged_epg.xml
+            grep -m1 "^<tv " "$FIRST_FILE" >> merged_epg.xml
+            for FILE in temp_epg_*.xml; do
+              sed -e '/^<?xml/d' -e '/^<tv /d' -e '/^<\/tv>/d' "$FILE" >> merged_epg.xml
+            done
+            echo "</tv>" >> merged_epg.xml
+            
+            # ========== 核心：全局替换+0000为+0800 ==========
+            sed -i 's/+0000/+0800/g' merged_epg.xml
+            
+            # 替换完成后赋值给e.xml
+            mv merged_epg.xml e.xml
+            DOWNLOAD_SUCCESS=1
+            echo "✅ 合并完成，时区已全局替换为+0800"
+          fi
+          
+          # 第三步：压缩并推送
+          if [ $DOWNLOAD_SUCCESS -eq 1 ]; then
+            gzip -9 -c e.xml > e.xml.gz
+            git add -f e.xml e.xml.gz
+            git config --local user.name "github-actions[bot]"
+            git config --local user.email "github-actions[bot]@users.noreply.github.com"
+            if git diff --cached --name-only | grep -q .; then
+              git fetch origin main
+              git commit -m "EPG Update: $(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M') (CST)"
+              git push origin HEAD:$GITHUB_REF_NAME --force
+              echo "✅ 推送完成"
+            else
+              echo "ℹ️ 无文件变更，跳过推送"
+            fi
+          else
+            echo "❌ 所有源下载失败，任务终止"
+            exit 1
+          fi
+          
+          # 清理临时文件
+          rm -rf temp_epg_*.xml merged_epg.xml

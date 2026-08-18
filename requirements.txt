@@ -1,0 +1,5 @@
+opencc-python-reimplemented
+requests
+python-socketio[client]
+websocket-client
+python-engineio[client]
