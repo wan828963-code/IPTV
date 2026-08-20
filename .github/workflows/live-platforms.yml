@@ -39,7 +39,7 @@ jobs:
             rm -f $tmp 2>/dev/null && echo "⚠️ 下载失败：$out，保留旧文件"
           }
           find . -maxdepth 1 -name "*.m3u" -delete 2>/dev/null
-          echo "🗑️  前置清理完成：删除当前目录所有旧的M3U文件"
+          echo "🗑️  前置清理完成"
           echo "📥 开始下载M3U源文件"
           for url in "${M3U_URLS[@]}"; do
             fn=$(basename "$url" | cut -d'?' -f1 | cut -d'&' -f1)
@@ -47,10 +47,10 @@ jobs:
           done
           if [ -s "yylunbo.m3u" ]; then
             sed -i 's#https://sub.ottiptv.cc#https://yylunbo.ottiptv.cc#g' yylunbo.m3u
-            echo "🔧 YY轮播域名替换完成：sub → yylunbo"
+            echo "🔧 YY轮播域名替换完成"
           fi
           echo "🔗 开始合并为 ${MERGED_M3U}"
-          echo "#EXTM3U" > "${MERGED_M3U}" 2>/dev/null
+          echo "#EXTM3U" > "${MERGED_M3U}"
           tmp=$(mktemp)
           touch "$tmp"
           for f in *.m3u; do 
@@ -62,6 +62,11 @@ jobs:
           rm -f "$tmp" 2>/dev/null
           find . -maxdepth 1 -name "*.m3u" ! -name "${MERGED_M3U}" -delete 2>/dev/null
           echo "🗑️  已删除源M3U文件，仅保留 ${MERGED_M3U}"
+          # 确保合并文件存在
+          if [ ! -s "${MERGED_M3U}" ]; then
+            echo "#EXTM3U" > "${MERGED_M3U}"
+            echo "⚠️ 合并文件为空，重新创建"
+          fi
           
       - name: 暂存文件
         run: git add "${{ env.MERGED_M3U }}"
@@ -74,11 +79,12 @@ jobs:
           
           if git diff --cached --name-only | grep -q .; then
             git fetch origin main
+            git pull --rebase origin main || true
             git commit -m "Live Platforms: $(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M') (CST)"
-            git push origin HEAD:$GITHUB_REF_NAME --force
-            echo "✅ 拉取最新代码并强制推送完成"
+            git push origin HEAD:main
+            echo "✅ 提交推送完成"
           else
-            echo "ℹ️ 无文件变更，跳过提交和推送"
+            echo "ℹ️ 无文件变更，跳过"
           fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
